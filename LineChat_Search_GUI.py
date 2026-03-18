@@ -12,7 +12,7 @@ st.title("📊 LINE 社群對話分析工具")
 st.subheader("1. 上傳對話紀錄")
 uploaded_file = st.file_uploader("請上傳從 LINE 匯出的 txt 檔案", type="txt")
 
-# 2. 時間範圍 (修正版：使用 value=[] 強制啟用範圍選取)
+# 2. 時間範圍
 st.subheader("2. 設定時間範圍")
 st.write("請點擊下方選取起始與結束日期 (若不選則代表分析全部時間)")
 date_range = st.date_input("選擇時間範圍", value=[])
@@ -24,58 +24,6 @@ keyword_input = st.text_input(
     value="我奶粉我驕傲,我奶粉我嬌傲,我是奶粉我驕傲"
 )
 
-# 將核心分析邏輯包裝成一個獨立的 Function
-def analyze_chat_data(content, keywords, start_date, end_date):
-    lines = content.split('\n')
-    
-    date_pattern = re.compile(r'^[A-Z][a-z]{2},\s(\d{2}/\d{2}/\d{4})$')
-    msg_pattern = re.compile(r'^(\d{2}:\d{2}[AP]M)\t([^\t]+)\t(.*)$')
-    
-    user_keyword_counts = Counter()
-    current_date = None
-    current_user = None
-    current_message_buffer = []
-
-    def process_buffered_message():
-        nonlocal current_user, current_date, current_message_buffer
-        if current_user and current_date:
-            if start_date <= current_date <= end_date:
-                full_message = "\n".join(current_message_buffer)
-                # 計算這則訊息中，所有關鍵字變體出現的實際總次數
-                match_count = sum(full_message.count(kw) for kw in keywords)
-                if match_count > 0:
-                    user_keyword_counts[current_user] += match_count
-
-    # 逐行分析
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        
-        date_match = date_pattern.match(line)
-        if date_match:
-            process_buffered_message()
-            current_user = None
-            current_message_buffer = []
-            current_date = datetime.strptime(date_match.group(1), "%m/%d/%Y")
-            continue
-        
-        msg_match = msg_pattern.match(line)
-        if msg_match:
-            process_buffered_message()
-            time_str, user, message = msg_match.groups()
-            current_user = user
-            current_message_buffer = [message]
-        else:
-            if current_user is not None:
-                current_message_buffer.append(line)
-                
-    # 處理最後一筆停留在 buffer 中的訊息
-    process_buffered_message()
-    
-    return user_keyword_counts
-
-
 # 4. 執行分析
 if st.button("🚀 開始分析", use_container_width=True):
     if not uploaded_file:
@@ -86,7 +34,7 @@ if st.button("🚀 開始分析", use_container_width=True):
         with st.spinner("分析中，請稍候..."):
             keywords = [k.strip() for k in keyword_input.split(',') if k.strip()]
             
-            # 處理日期範圍邏輯 (增加防呆機制)
+            # 處理日期範圍邏輯
             start_date = datetime.min
             end_date = datetime.max
             
@@ -100,25 +48,69 @@ if st.button("🚀 開始分析", use_container_width=True):
 
             # 讀取檔案內容
             content = uploaded_file.read().decode("utf-8")
+            lines = content.split('\n')
             
-            # 呼叫分析函數
-            user_keyword_counts = analyze_chat_data(content, keywords, start_date, end_date)
+            # 正規表達式：匹配 LINE 的日期行與訊息行
+            date_pattern = re.compile(r'^[A-Z][a-z]{2},\s(\d{2}/\d{2}/\d{4})$')
+            msg_pattern = re.compile(r'^(\d{2}:\d{2}[AP]M)\t([^\t]+)\t(.*)$')
+            
+            user_keyword_counts = Counter()
+            current_date = None
+            current_user = None
+            current_message_buffer = []
+
+            def process_buffered_message():
+                nonlocal current_user, current_date, current_message_buffer
+                if current_user and current_date:
+                    if start_date <= current_date <= end_date:
+                        full_message = "\n".join(current_message_buffer)
+                        # 【邏輯修改點】只要訊息內包含任何一個變體關鍵字，該使用者的計數就 +1
+                        if any(kw in full_message for kw in keywords):
+                            user_keyword_counts[current_user] += 1
+
+            # 逐行分析
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                date_match = date_pattern.match(line)
+                if date_match:
+                    process_buffered_message()
+                    current_user = None
+                    current_message_buffer = []
+                    current_date = datetime.strptime(date_match.group(1), "%m/%d/%Y")
+                    continue
+                
+                msg_match = msg_pattern.match(line)
+                if msg_match:
+                    process_buffered_message()
+                    time_str, user, message = msg_match.groups()
+                    current_user = user
+                    current_message_buffer = [message]
+                else:
+                    if current_user is not None:
+                        current_message_buffer.append(line)
+                        
+            # 處理最後一筆停留在 buffer 中的訊息
+            process_buffered_message()
 
             # --- 顯示分析結果 ---
             total_unique_users = len(user_keyword_counts)
-            total_keyword_mentions = sum(user_keyword_counts.values())
+            total_message_mentions = sum(user_keyword_counts.values())
             
             st.success("✅ 分析完成！")
             
             col1, col2 = st.columns(2)
             col1.metric("不重複發言人數", f"{total_unique_users} 人")
-            col2.metric("關鍵字總留言次數", f"{total_keyword_mentions} 次")
+            # 標題同步修改為「符合條件的訊息總數」
+            col2.metric("符合條件的訊息總數", f"{total_message_mentions} 則")
             
             st.markdown("---")
             
             if total_unique_users > 0:
                 st.subheader("🏆 留言排行榜 (由多到少)")
-                data = [{"排名": rank, "使用者名稱": user, "留言次數": count} 
+                data = [{"排名": rank, "使用者名稱": user, "留言則數": count} 
                         for rank, (user, count) in enumerate(user_keyword_counts.most_common(), 1)]
                 df = pd.DataFrame(data)
                 
